@@ -69,7 +69,6 @@ if uploaded_file is not None:
                 st.image(img, caption="Uploaded Image", use_column_width=True)
                 st.warning("⚠️ No clear human face detected. Please upload a clear frontal face image.")
             else:
-                # Extract tight face box
                 face_tensor = mtcnn(img)
                 if face_tensor is not None:
                     face_np = face_tensor.permute(1, 2, 0).cpu().numpy().astype('uint8')
@@ -77,7 +76,6 @@ if uploaded_file is not None:
                 else:
                     crop = img.resize((224, 224))
 
-                # Display the cropped face being analyzed
                 col1, col2 = st.columns(2)
                 with col1:
                     st.image(img, caption="Original Image", use_column_width=True)
@@ -98,8 +96,7 @@ if uploaded_file is not None:
                 else:
                     st.error(f"### Prediction: **{pred_label}**")
                 
-                st.info(f"**Confidence Score:** {conf_score * 100:.2f}%
-
-**Raw Real Score:** {prob_real:.4f}")
+                st.info(f"**Confidence Score:** {conf_score * 100:.2f}%")
+                st.write(f"**Raw Real Score:** {prob_real:.4f}")
         except Exception as e:
             st.error("Error analyzing face. Please try another image.")
