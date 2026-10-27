@@ -15,6 +15,7 @@ st.write("Upload a face image to evaluate its authenticity using EfficientNet-B0
 
 device = torch.device("cpu")
 CHECKPOINT_PATH = "best_deepfake_model.pt"
+DRIVE_FILE_ID = "1IKlstbHz9bq7sVT_1ULIjuQGk6HKFhVS"
 
 @st.cache_resource
 def load_model():
