@@ -1,4 +1,8 @@
 import os
+
+STREAMLIT_PATH = "streamlit_app.py"
+
+streamlit_code = """import os
 import cv2
 import torch
 import torch.nn as nn
@@ -10,10 +14,10 @@ from torchvision import transforms
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 from facenet_pytorch import MTCNN
 
-st.set_page_config(page_title="Deepfake Detection AI with Grad-CAM", page_icon="🛡️", layout="centered")
+st.set_page_config(page_title="Deepfake Detection AI with Grad-CAM & 2D-FFT", page_icon="🛡️", layout="wide")
 
-st.title("🛡️ Deepfake Detection AI + Grad-CAM")
-st.write("Upload an image to evaluate facial authenticity and view the Grad-CAM visual explainability heatmap.")
+st.title("🛡️ Multi-Domain Deepfake Detection AI")
+st.write("Upload an image to perform dual-domain analysis: **RGB Spatial Features (Grad-CAM)** and **Frequency Domain Artifacts (2D-FFT)**.")
 
 device = torch.device("cpu")
 CHECKPOINT_PATH = "best_deepfake_model.pt"
@@ -33,7 +37,6 @@ class DeepfakeDetector(nn.Module):
     def forward(self, x):
         return self.backbone(x)
 
-# Grad-CAM Engine using PyTorch Backward Hooks
 class GradCAM:
     def __init__(self, model, target_layer):
         self.model = model
@@ -66,6 +69,22 @@ class GradCAM:
         
         return cam, torch.sigmoid(logit).item()
 
+def compute_fft_spectrum(image_pil):
+    # Convert crop to grayscale for frequency analysis
+    gray = np.array(image_pil.convert('L'))
+    
+    # Compute 2D Fast Fourier Transform & Shift Zero Frequency Component to Center
+    f_transform = np.fft.fft2(gray)
+    f_shift = np.fft.fftshift(f_transform)
+    
+    # Calculate Magnitude Spectrum (Log scale for visualization)
+    magnitude_spectrum = 20 * np.log(np.abs(f_shift) + 1e-8)
+    
+    # Normalize to 0-255 range and apply Jet colormap
+    norm_spectrum = cv2.normalize(magnitude_spectrum, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+    fft_color = cv2.applyColorMap(norm_spectrum, cv2.COLORMAP_JET)
+    return cv2.cvtColor(fft_color, cv2.COLOR_BGR2RGB)
+
 @st.cache_resource
 def load_model():
     if not os.path.exists(CHECKPOINT_PATH):
@@ -82,7 +101,6 @@ def load_model():
 
 model = load_model()
 
-# Extract target layer for Grad-CAM
 target_layer = model.backbone.features[-1]
 grad_cam = GradCAM(model, target_layer)
 
@@ -98,9 +116,9 @@ uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg
 
 if uploaded_file is not None:
     img = Image.open(uploaded_file).convert("RGB")
-    st.image(img, caption="Source Image", use_column_width=True)
+    st.image(img, caption="Source Image", width=400)
 
-    with st.spinner("Detecting faces & generating Grad-CAM heatmaps..."):
+    with st.spinner("Detecting faces, running Grad-CAM & computing 2D-FFT frequency spectra..."):
         try:
             boxes, probs = mtcnn.detect(img)
             valid_boxes = [box for box, prob in zip(boxes, probs) if prob is not None and prob >= 0.70] if boxes is not None else []
@@ -122,6 +140,7 @@ if uploaded_file is not None:
                     cropped_face = img.crop((x1, y1, x2, y2))
                     tensor_in = transform(cropped_face).unsqueeze(0).to(device)
 
+                    # Compute Spatial Heatmap (Grad-CAM)
                     cam_map, prob_real = grad_cam.generate_heatmap(tensor_in)
 
                     face_cv = np.array(cropped_face.resize((224, 224)))
@@ -129,18 +148,23 @@ if uploaded_file is not None:
                     heatmap_uint8 = np.uint8(255 * heatmap_resized)
                     heatmap_color = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
                     heatmap_color = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
-
                     overlay = cv2.addWeighted(face_cv, 0.6, heatmap_color, 0.4, 0)
+
+                    # Compute Frequency Spectrum (2D-FFT)
+                    fft_spectrum = compute_fft_spectrum(cropped_face)
 
                     pred_label = "REAL" if prob_real >= 0.50 else "FAKE"
                     conf_score = prob_real if pred_label == "REAL" else (1.0 - prob_real)
 
-                    col1, col2, col3 = st.columns(3)
+                    # Display 4-Column Multi-Domain Analysis
+                    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
                     with col1:
                         st.image(cropped_face, caption=f"Person #{idx} Crop", use_column_width=True)
                     with col2:
                         st.image(overlay, caption=f"Person #{idx} Grad-CAM", use_column_width=True)
                     with col3:
+                        st.image(fft_spectrum, caption=f"Person #{idx} 2D-FFT Spectrum", use_column_width=True)
+                    with col4:
                         if pred_label == "REAL":
                             st.success(f"**Verdict:** {pred_label}")
                         else:
@@ -151,4 +175,10 @@ if uploaded_file is not None:
                     st.markdown("---")
 
         except Exception as e:
-            st.error("Error analyzing image with Grad-CAM.")
+            st.error("Error performing multi-domain analysis.")
+"""
+
+with open(STREAMLIT_PATH, "w") as f:
+    f.write(streamlit_code)
+
+print("✅ Updated streamlit_app.py with 2D-FFT Frequency Analysis!")
