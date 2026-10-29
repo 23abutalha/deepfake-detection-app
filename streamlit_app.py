@@ -1,5 +1,6 @@
 import os
 import cv2
+import tempfile
 import torch
 import torch.nn as nn
 import numpy as np
@@ -10,10 +11,10 @@ from torchvision import transforms
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 from facenet_pytorch import MTCNN
 
-st.set_page_config(page_title="Deepfake Detection AI with Grad-CAM & 2D-FFT", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Deepfake Detection AI - Multi-Domain & Group Analysis", page_icon="🛡️", layout="wide")
 
 st.title("🛡️ Multi-Domain Deepfake Detection AI")
-st.write("Upload an image to perform dual-domain analysis: **RGB Spatial Features (Grad-CAM)** and **Frequency Domain Artifacts (2D-FFT)**.")
+st.write("Perform spatial (Grad-CAM), frequency (2D-FFT), and temporal analysis on uploaded images or videos.")
 
 device = torch.device("cpu")
 CHECKPOINT_PATH = "best_deepfake_model.pt"
@@ -87,20 +88,20 @@ def calculate_iou(boxA, boxB):
     iou = interArea / float(boxAArea + boxBArea - interArea + 1e-6)
     return iou
 
-def filter_duplicate_boxes(boxes, probs, img_w, img_h):
+def filter_group_boxes(boxes, probs, img_w, img_h):
     if boxes is None or probs is None:
         return []
 
     valid = []
+    img_area = img_w * img_h
+
     for box, prob in zip(boxes, probs):
-        if prob is not None and prob >= 0.85:
+        if prob is not None and prob >= 0.60:
             w = box[2] - box[0]
             h = box[3] - box[1]
             box_area = w * h
-            img_area = img_w * img_h
             
-            # Reject micro-boxes covering less than 3% of total image
-            if (box_area / img_area) >= 0.03:
+            if (box_area / img_area) >= 0.002:
                 valid.append((box, prob))
 
     valid.sort(key=lambda x: x[1], reverse=True)
@@ -109,7 +110,7 @@ def filter_duplicate_boxes(boxes, probs, img_w, img_h):
     for box, prob in valid:
         keep = True
         for f_box in filtered_boxes:
-            if calculate_iou(box, f_box) > 0.25:
+            if calculate_iou(box, f_box) > 0.30:
                 keep = False
                 break
         if keep:
@@ -136,7 +137,7 @@ model = load_model()
 target_layer = model.backbone.features[-1]
 grad_cam = GradCAM(model, target_layer)
 
-mtcnn = MTCNN(image_size=224, margin=30, keep_all=True, post_process=False, device=device)
+mtcnn = MTCNN(image_size=224, margin=15, keep_all=True, post_process=False, device=device)
 
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -144,64 +145,134 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
+mode = st.radio("Select Input Mode:", ["Image Analysis", "Video Analysis"], horizontal=True)
 
-if uploaded_file is not None:
-    img = Image.open(uploaded_file).convert("RGB")
-    st.image(img, caption="Source Image", width=400)
+if mode == "Image Analysis":
+    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
 
-    with st.spinner("Detecting faces, running Grad-CAM & computing 2D-FFT frequency spectra..."):
-        try:
-            img_w, img_h = img.size
-            boxes, probs = mtcnn.detect(img)
-            
-            valid_boxes = filter_duplicate_boxes(boxes, probs, img_w, img_h)
+    if uploaded_file is not None:
+        img = Image.open(uploaded_file).convert("RGB")
+        st.image(img, caption="Source Image", width=450)
 
-            if not valid_boxes:
-                st.warning("⚠️ No clear human faces detected.")
-            else:
-                st.markdown(f"### 👥 Detected {len(valid_boxes)} Face(s)")
-                st.markdown("---")
+        with st.spinner("Detecting faces, running Grad-CAM & computing 2D-FFT frequency spectra..."):
+            try:
+                img_w, img_h = img.size
+                boxes, probs = mtcnn.detect(img)
+                
+                valid_boxes = filter_group_boxes(boxes, probs, img_w, img_h)
 
-                for idx, box in enumerate(valid_boxes, 1):
-                    x1, y1, x2, y2 = [int(b) for b in box]
-                    margin = 20
-                    x1, y1 = max(0, x1 - margin), max(0, y1 - margin)
-                    x2, y2 = min(img_w, x2 + margin), min(img_h, y2 + margin)
-
-                    cropped_face = img.crop((x1, y1, x2, y2))
-                    tensor_in = transform(cropped_face).unsqueeze(0).to(device)
-
-                    cam_map, prob_real = grad_cam.generate_heatmap(tensor_in)
-
-                    face_cv = np.array(cropped_face.resize((224, 224)))
-                    heatmap_resized = cv2.resize(cam_map, (224, 224))
-                    heatmap_uint8 = np.uint8(255 * heatmap_resized)
-                    heatmap_color = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
-                    heatmap_color = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
-                    overlay = cv2.addWeighted(face_cv, 0.6, heatmap_color, 0.4, 0)
-
-                    fft_spectrum = compute_fft_spectrum(cropped_face)
-
-                    pred_label = "REAL" if prob_real >= 0.50 else "FAKE"
-                    conf_score = prob_real if pred_label == "REAL" else (1.0 - prob_real)
-
-                    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
-                    with col1:
-                        st.image(cropped_face, caption=f"Person #{idx} Crop", use_column_width=True)
-                    with col2:
-                        st.image(overlay, caption=f"Person #{idx} Grad-CAM", use_column_width=True)
-                    with col3:
-                        st.image(fft_spectrum, caption=f"Person #{idx} 2D-FFT Spectrum", use_column_width=True)
-                    with col4:
-                        if pred_label == "REAL":
-                            st.success(f"**Verdict:** {pred_label}")
-                        else:
-                            st.error(f"**Verdict:** {pred_label}")
-                        st.write(f"• **Confidence:** {conf_score * 100:.2f}%")
-                        st.write(f"• **Real Score:** {prob_real:.4f}")
-
+                if not valid_boxes:
+                    st.warning("⚠️ No clear human faces detected.")
+                else:
+                    st.markdown(f"### 👥 Detected {len(valid_boxes)} Face(s)")
                     st.markdown("---")
 
-        except Exception as e:
-            st.error("Error performing multi-domain analysis.")
+                    for idx, box in enumerate(valid_boxes, 1):
+                        x1, y1, x2, y2 = [int(b) for b in box]
+                        margin = 15
+                        x1, y1 = max(0, x1 - margin), max(0, y1 - margin)
+                        x2, y2 = min(img_w, x2 + margin), min(img_h, y2 + margin)
+
+                        cropped_face = img.crop((x1, y1, x2, y2))
+                        tensor_in = transform(cropped_face).unsqueeze(0).to(device)
+
+                        cam_map, prob_real = grad_cam.generate_heatmap(tensor_in)
+
+                        face_cv = np.array(cropped_face.resize((224, 224)))
+                        heatmap_resized = cv2.resize(cam_map, (224, 224))
+                        heatmap_uint8 = np.uint8(255 * heatmap_resized)
+                        heatmap_color = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
+                        heatmap_color = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
+                        overlay = cv2.addWeighted(face_cv, 0.6, heatmap_color, 0.4, 0)
+
+                        fft_spectrum = compute_fft_spectrum(cropped_face)
+
+                        pred_label = "REAL" if prob_real >= 0.50 else "FAKE"
+                        conf_score = prob_real if pred_label == "REAL" else (1.0 - prob_real)
+
+                        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+                        with col1:
+                            st.image(cropped_face, caption=f"Person #{idx} Crop", use_column_width=True)
+                        with col2:
+                            st.image(overlay, caption=f"Person #{idx} Grad-CAM", use_column_width=True)
+                        with col3:
+                            st.image(fft_spectrum, caption=f"Person #{idx} 2D-FFT Spectrum", use_column_width=True)
+                        with col4:
+                            if pred_label == "REAL":
+                                st.success(f"**Verdict:** {pred_label}")
+                            else:
+                                st.error(f"**Verdict:** {pred_label}")
+                            st.write(f"• **Confidence:** {conf_score * 100:.2f}%")
+                            st.write(f"• **Real Score:** {prob_real:.4f}")
+
+                        st.markdown("---")
+
+            except Exception as e:
+                st.error("Error performing multi-domain analysis.")
+
+elif mode == "Video Analysis":
+    video_file = st.file_uploader("Upload a Video...", type=["mp4", "avi", "mov"])
+    
+    if video_file is not None:
+        tfile = tempfile.NamedTemporaryFile(delete=False)
+        tfile.write(video_file.read())
+        
+        cap = cv2.VideoCapture(tfile.name)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        st.video(tfile.name)
+        st.info(f"📹 Video Loaded: {total_frames} Total Frames")
+
+        if st.button("Start Temporal Frame Analysis"):
+            frame_scores = []
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            frame_idx = 0
+            stride = max(1, total_frames // 20)
+
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                if frame_idx % stride == 0:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    pil_img = Image.fromarray(frame_rgb)
+                    
+                    boxes, probs = mtcnn.detect(pil_img)
+                    img_w, img_h = pil_img.size
+                    valid_boxes = filter_group_boxes(boxes, probs, img_w, img_h)
+
+                    if valid_boxes:
+                        box = valid_boxes[0]
+                        x1, y1, x2, y2 = [int(b) for b in box]
+                        cropped_face = pil_img.crop((x1, y1, x2, y2))
+                        tensor_in = transform(cropped_face).unsqueeze(0).to(device)
+
+                        with torch.no_grad():
+                            logit = model(tensor_in).squeeze().item()
+                            prob_real = torch.sigmoid(torch.tensor(logit)).item()
+                            frame_scores.append(prob_real)
+
+                frame_idx += 1
+                progress_bar.progress(min(1.0, frame_idx / total_frames))
+                status_text.text(f"Analyzing frame {frame_idx}/{total_frames}...")
+
+            cap.release()
+            status_text.text("✅ Analysis Complete!")
+
+            if frame_scores:
+                avg_real = np.mean(frame_scores)
+                overall_label = "REAL" if avg_real >= 0.50 else "FAKE"
+                overall_conf = avg_real if overall_label == "REAL" else (1.0 - avg_real)
+
+                st.markdown("### 📊 Temporal Analysis Summary")
+                if overall_label == "REAL":
+                    st.success(f"**Overall Video Verdict:** {overall_label} (Confidence: {overall_conf * 100:.2f}%)")
+                else:
+                    st.error(f"**Overall Video Verdict:** {overall_label} (Confidence: {overall_conf * 100:.2f}%)")
+
+                st.line_chart(frame_scores, use_container_width=True)
+            else:
+                st.warning("⚠️ No valid faces detected across sampled video frames.")
